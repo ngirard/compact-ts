@@ -3,7 +3,7 @@
 // Prints a compact timestamp: YY-DOY-BASEMIN with a configurable base
 // and can convert from a standard timestamp format.
 
-use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, Timelike, TimeZone, Utc};
+use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc};
 use clap::{Parser, ValueEnum};
 
 // SECTION 1: COMMAND-LINE INTERFACE SETUP
@@ -62,7 +62,10 @@ enum Base {
 fn parse_flexible_timestamp(s: &str) -> Result<DateTime<Local>, String> {
     // Helper to convert a NaiveDateTime to a local DateTime, handling ambiguity.
     let to_local = |ndt: NaiveDateTime| {
-        Local.from_local_datetime(&ndt).single().ok_or_else(|| "Ambiguous local time".to_string())
+        Local
+            .from_local_datetime(&ndt)
+            .single()
+            .ok_or_else(|| "Ambiguous local time".to_string())
     };
 
     // Attempt 1: Full ISO 8601 / RFC 3339 (e.g., 2025-06-30T22:42:05Z)
@@ -125,7 +128,6 @@ fn parse_flexible_timestamp(s: &str) -> Result<DateTime<Local>, String> {
 
     Err(format!("Could not parse '{}' as a valid timestamp.", s))
 }
-
 
 /// Converts a non-negative integer to a string in the specified base.
 fn to_base_n(mut n: u32, base: u32) -> String {
@@ -242,7 +244,7 @@ mod tests {
         assert_eq!(parsed.hour(), 0);
         assert_eq!(parsed.minute(), 0);
     }
-    
+
     #[test]
     fn test_parse_naive_datetime() {
         let input = "2025-06-30T22:42:05";
