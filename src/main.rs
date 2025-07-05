@@ -23,11 +23,21 @@ struct Cli {
 
     /// Convert a specific timestamp instead of using the current time.
     ///
-    /// Tries to parse multiple formats, including:
-    /// - ISO 8601 with timezone: 2025-06-30T22:42:05Z
-    /// - ISO 8601 compact:      20250630T224205Z
-    /// - Date with hyphens:       2025-06-30 (time defaults to 00:00:00)
-    /// - Date compact:          20250630   (time defaults to 00:00:00)
+    /// Tries to parse multiple formats in order of specificity.
+    /// Timestamps with offsets are converted to local time.
+    /// Naive timestamps are interpreted in the local timezone.
+    /// Date-only inputs default to midnight.
+    ///
+    /// Examples:
+    /// - 2025-06-30T22:42:05Z      (RFC 3339)
+    /// - 2025-06-28T20:28+02:00    (ISO 8601 with offset, no seconds)
+    /// - 20250628T20:28+02:00      (Compact date with offset)
+    /// - 20250630T224205Z          (Compact ISO 8601)
+    /// - 2025-06-30T22:42:05       (Naive full)
+    /// - 2025-06-30T22:42          (Naive no seconds)
+    /// - 20250630T2242             (Fully compact)
+    /// - 2025-06-30                (Date only)
+    /// - 20250630                  (Date only compact)
     #[arg(long)]
     from: Option<String>,
 }
@@ -60,48 +70,54 @@ fn parse_flexible_timestamp(s: &str) -> Result<DateTime<Local>, String> {
         return Ok(dt.with_timezone(&Local));
     }
 
-    // Attempt 2: ISO 8601 compact with Z (e.g., 20250630T224205Z)
+    // Attempt 2: ISO 8601 with offset, no seconds (e.g., 2025-06-28T20:28+02:00)
+    if let Ok(dt) = DateTime::parse_from_str(s, "%Y-%m-%dT%H:%M%z") {
+        return Ok(dt.with_timezone(&Local));
+    }
+
+    // Attempt 3: Compact date, time with colon, offset, no seconds (e.g., 20250628T20:28+02:00)
+    if let Ok(dt) = DateTime::parse_from_str(s, "%Y%m%dT%H:%M%z") {
+        return Ok(dt.with_timezone(&Local));
+    }
+
+    // Attempt 4: ISO 8601 compact with Z (e.g., 20250630T224205Z)
     // Note: The 'Z' is a literal, not a timezone name for `%Z`.
     if let Ok(dt) = NaiveDateTime::parse_from_str(s, "%Y%m%dT%H%M%SZ") {
         return Ok(Utc.from_utc_datetime(&dt).with_timezone(&Local));
     }
 
-    // Attempt 3: Naive date and time with seconds (e.g., 2025-06-30T22:42:05)
+    // Attempt 5: Naive date and time with seconds (e.g., 2025-06-30T22:42:05)
     if let Ok(ndt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
         return to_local(ndt);
     }
 
-    // --- NEW FORMATS START HERE ---
-
-    // Attempt 4: Naive date and time, no seconds, with colon (e.g., 2025-06-30T22:42)
+    // Attempt 6: Naive date and time, no seconds, with colon (e.g., 2025-06-30T22:42)
     if let Ok(ndt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M") {
         return to_local(ndt);
     }
 
-    // Attempt 5: Naive date and time, no seconds, compact time (e.g., 2025-06-30T2242)
+    // Attempt 7: Naive date and time, no seconds, compact time (e.g., 2025-06-30T2242)
     if let Ok(ndt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H%M") {
         return to_local(ndt);
     }
 
-    // Attempt 6: Compact date, naive time, no seconds, with colon (e.g., 20250630T22:42)
+    // Attempt 8: Compact date, naive time, no seconds, with colon (e.g., 20250630T22:42)
     if let Ok(ndt) = NaiveDateTime::parse_from_str(s, "%Y%m%dT%H:%M") {
         return to_local(ndt);
     }
 
-    // Attempt 7: Fully compact date and time, no seconds (e.g., 20250630T2242)
+    // Attempt 9: Fully compact date and time, no seconds (e.g., 20250630T2242)
     if let Ok(ndt) = NaiveDateTime::parse_from_str(s, "%Y%m%dT%H%M") {
         return to_local(ndt);
     }
 
-    // --- NEW FORMATS END HERE ---
-
-    // Attempt 8: Date-only with hyphens (e.g., 2025-06-30)
+    // Attempt 10: Date-only with hyphens (e.g., 2025-06-30)
     if let Ok(date) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
         let dt = date.and_hms_opt(0, 0, 0).unwrap();
         return to_local(dt);
     }
 
-    // Attempt 9: Date-only compact (e.g., 20250630)
+    // Attempt 11: Date-only compact (e.g., 20250630)
     if let Ok(date) = NaiveDate::parse_from_str(s, "%Y%m%d") {
         let dt = date.and_hms_opt(0, 0, 0).unwrap();
         return to_local(dt);
@@ -109,6 +125,7 @@ fn parse_flexible_timestamp(s: &str) -> Result<DateTime<Local>, String> {
 
     Err(format!("Could not parse '{}' as a valid timestamp.", s))
 }
+
 
 /// Converts a non-negative integer to a string in the specified base.
 fn to_base_n(mut n: u32, base: u32) -> String {
@@ -299,5 +316,21 @@ mod tests {
         assert_eq!(parsed.hour(), 22);
         assert_eq!(parsed.minute(), 42);
         assert_eq!(parsed.second(), 0);
+    }
+
+    #[test]
+    fn test_parse_iso_no_seconds_with_offset() {
+        let input = "2025-06-28T20:28+02:00";
+        let expected = make_utc_dt(2025, 6, 28, 18, 28, 0);
+        let parsed = parse_flexible_timestamp(input).unwrap();
+        assert_eq!(parsed.with_timezone(&Utc), expected);
+    }
+
+    #[test]
+    fn test_parse_compact_date_no_seconds_with_offset() {
+        let input = "20250628T20:28+02:00";
+        let expected = make_utc_dt(2025, 6, 28, 18, 28, 0);
+        let parsed = parse_flexible_timestamp(input).unwrap();
+        assert_eq!(parsed.with_timezone(&Utc), expected);
     }
 }

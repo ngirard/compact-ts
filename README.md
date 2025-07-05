@@ -54,12 +54,16 @@ $ compact-ts --base b36
 
 ### Converting from a standard timestamp
 
-Use the `--from` flag to convert a given date/time string. The parser is flexible and accepts multiple formats.
+Use the `--from` flag to convert a given date/time string. The parser is flexible and accepts multiple formats. The examples below assume a UTC local timezone for consistent output.
 
 ```sh
 # Full ISO 8601 with timezone
 $ compact-ts --from "2025-06-30T22:42:05Z"
 25-181-956
+
+# ISO 8601 with offset, no seconds
+$ compact-ts --from "2025-06-28T20:28+02:00"
+25-179-784
 
 # Date only (time defaults to 00:00)
 $ compact-ts --from 2025-01-01
@@ -87,11 +91,21 @@ Options:
   -b, --base <BASE>  The numerical base to use for encoding the minutes since midnight [default: b12] [possible values: b12, b36]
       --from <FROM>  Convert a specific timestamp instead of using the current time.
                      
-                     Tries to parse multiple formats, including:
-                     - ISO 8601 with timezone: 2025-06-30T22:42:05Z
-                     - ISO 8601 compact:      20250630T224205Z
-                     - Date with hyphens:       2025-06-30 (time defaults to 00:00:00)
-                     - Date compact:          20250630   (time defaults to 00:00:00)
+                     Tries to parse multiple formats in order of specificity.
+                     Timestamps with offsets are converted to local time.
+                     Naive timestamps are interpreted in the local timezone.
+                     Date-only inputs default to midnight.
+                     
+                     Examples:
+                     - 2025-06-30T22:42:05Z      (RFC 3339)
+                     - 2025-06-28T20:28+02:00    (ISO 8601 with offset, no seconds)
+                     - 20250628T20:28+02:00    (Compact date with offset)
+                     - 20250630T224205Z          (Compact ISO 8601)
+                     - 2025-06-30T22:42:05       (Naive full)
+                     - 2025-06-30T22:42          (Naive no seconds)
+                     - 20250630T2242             (Fully compact)
+                     - 2025-06-30                (Date only)
+                     - 20250630                  (Date only compact)
   -h, --help         Print help
   -V, --version      Print version
 ```
