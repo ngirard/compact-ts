@@ -22,9 +22,9 @@ jobs:
           - os: macos-latest
             target: x86_64-apple-darwin
             archive_extension: tar.gz
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            archive_extension: zip
+          #- os: windows-latest
+          #  target: x86_64-pc-windows-msvc
+          #  archive_extension: zip
 
     steps:
       - name: Checkout repository
