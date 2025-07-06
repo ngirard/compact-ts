@@ -3,64 +3,88 @@ name: Release
 on:
   push:
     tags:
-      - v*
-
+      - 'v*'
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  package:
-    runs-on: '${{ matrix.os }}'
+  build_and_release:
+    name: Build and Release
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write # Required to upload release assets
     strategy:
       matrix:
-        os: [ubuntu-latest, macOS-latest, windows-latest]
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-          - os: macOS-latest
+            archive_extension: tar.gz
+          - os: macos-latest
             target: x86_64-apple-darwin
+            archive_extension: tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            archive_extension: zip
+
     steps:
-      - uses: hecrj/setup-rust-action@v1
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          rust-version: stable
-      - uses: actions/checkout@v2
-      - name: Setup target
-        run: rustup target add ${{ matrix.target }}
-      - name: Install musl
-        run: sudo apt-get install musl-tools
-        if: contains(matrix.target, 'linux-musl')
-      - name: Build in release configuration
-        run: cargo build --target ${{ matrix.target }} ${{ matrix.flags }} --release --verbose
-      - name: Strip binary
-        run: strip 'target/${{ matrix.target }}/release/compact-ts'
-        if: "!contains(matrix.target, 'windows')"
-      - uses: little-core-labs/get-git-tag@v3.0.2
-      - name: Build package
+          toolchain: stable
+          target: ${{ matrix.target }}
+          cache: true # Enable caching for dependencies
+
+      - name: Install musl for Linux build
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build binary
+        run: cargo build --release --target ${{ matrix.target }} --verbose
+
+      - name: Strip binary (Linux & macOS)
+        if: runner.os != 'Windows'
+        run: strip target/${{ matrix.target }}/release/compact-ts
+
+      - name: Prepare package artifacts
         id: package
         shell: bash
         run: |
-          ARCHIVE_NAME="compact-ts-${GITHUB_TAG_NAME}-${{ matrix.target }}"
-          if [[ '${{ matrix.target }}' == *windows* ]]; then
-            ARCHIVE_FILE="${ARCHIVE_NAME}.zip"
-            mv LICENSE LICENSE.txt
-            7z a "${ARCHIVE_FILE}" "./target/${{ matrix.target }}/release/compact-ts.exe" ./README.md ./CHANGELOG.md ./LICENSE.txt
-            echo ::set-output "name=file::${ARCHIVE_FILE}"
-            echo ::set-output "name=name::${ARCHIVE_NAME}.zip"
-          else
-            ARCHIVE_FILE="/tmp/${ARCHIVE_NAME}.tar.gz"
-            mkdir "/tmp/${ARCHIVE_NAME}"
-            cp README.md CHANGELOG.md LICENSE "target/${{ matrix.target }}/release/compact-ts" "/tmp/${ARCHIVE_NAME}"
-            tar -czf "${ARCHIVE_FILE}" -C /tmp/ "${ARCHIVE_NAME}"
-            echo ::set-output "name=file::${ARCHIVE_FILE}"
-            echo ::set-output "name=name::${ARCHIVE_NAME}.tar.gz"
+          # Define asset names and paths
+          BINARY_NAME="compact-ts"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            BINARY_NAME="compact-ts.exe"
           fi
-      - name: Upload package
-        uses: svenstaro/upload-release-action@v1-release
+          
+          RELEASE_DIR="target/${{ matrix.target }}/release"
+          ARCHIVE_NAME="compact-ts-${{ github.ref_name }}-${{ matrix.target }}"
+          
+          # Create a temporary directory for packaging
+          PACKAGE_DIR="/tmp/${ARCHIVE_NAME}"
+          mkdir -p "${PACKAGE_DIR}"
+
+          # Copy necessary files
+          cp "${RELEASE_DIR}/${BINARY_NAME}" "${PACKAGE_DIR}/"
+          cp README.md LICENSE "${PACKAGE_DIR}/"
+
+          # Create the archive
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            7z a "${ARCHIVE_NAME}.zip" "./${PACKAGE_DIR}/*"
+            echo "FILE_PATH=${ARCHIVE_NAME}.zip" >> $GITHUB_OUTPUT
+            echo "ASSET_NAME=${ARCHIVE_NAME}.zip" >> $GITHUB_OUTPUT
+          else
+            tar -czf "${ARCHIVE_NAME}.tar.gz" -C "/tmp" "${ARCHIVE_NAME}"
+            echo "FILE_PATH=${ARCHIVE_NAME}.tar.gz" >> $GITHUB_OUTPUT
+            echo "ASSET_NAME=${ARCHIVE_NAME}.tar.gz" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload release asset
+        uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: ${{ steps.package.outputs.file }}
-          asset_name:  ${{ steps.package.outputs.name }}
+          file: ${{ steps.package.outputs.FILE_PATH }}
+          asset_name: ${{ steps.package.outputs.ASSET_NAME }}
           tag: ${{ github.ref }}
           overwrite: true
