@@ -38,7 +38,7 @@ struct Cli {
     /// - 20250630T2242             (Fully compact)
     /// - 2025-06-30                (Date only)
     /// - 20250630                  (Date only compact)
-    #[arg(long)]
+    #[arg(long, verbatim_doc_comment)]
     from: Option<String>,
 }
 
