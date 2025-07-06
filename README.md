@@ -2,7 +2,7 @@
 
 A command-line utility for generating and converting compact, sortable timestamps.
 
-The program produces timestamps in the format `YY-DOY-BASEMIN`, which is designed to be both human-readable and easily sortable.
+The program produces timestamps in the format `YY-DOY-BASEMIN`, which is designed to be both human-readable and easily sortable. It can also expand these timestamps back into a standard format.
 
 ## Timestamp Format
 
@@ -17,9 +17,10 @@ The generated timestamp has the following structure: `YY-DOY-BASEMIN`
 ## Features
 
 * Generates a compact timestamp for the current time.
-* Converts standard timestamps to the compact format using the `--from` flag.
-* Parses a wide range of ISO 8601 and other common date/time formats.
-* Offers a configurable numerical base (`--base`) for the minutes component.
+* Converts standard timestamps to the compact format using the `generate --from` flag.
+* Expands a compact timestamp back into a standard, readable format using the `expand` command.
+* Parses a wide range of ISO 8601 and other common date/time formats for generation.
+* Offers a configurable numerical base (`--base`) for both generation and expansion.
 * Produces a fixed-width output ideal for sorting and use in filenames.
 * Compiles to a single, self-contained binary with no runtime dependencies.
 
@@ -38,7 +39,7 @@ cargo install --git https://github.com/ngirard/compact-ts.git
 
 ## Usage
 
-### Basic usage
+### Generating a compact timestamp
 
 To generate a timestamp for the current time using the default Base-12:
 ```sh
@@ -54,60 +55,90 @@ $ compact-ts --base b36
 
 ### Converting from a standard timestamp
 
-Use the `--from` flag to convert a given date/time string. The parser is flexible and accepts multiple formats. The examples below assume a UTC local timezone for consistent output.
+Use the `generate --from` flag to convert a given date/time string. The parser is flexible and accepts multiple formats. The examples below assume a UTC local timezone for consistent output.
 
 ```sh
 # Full ISO 8601 with timezone
-$ compact-ts --from "2025-06-30T22:42:05Z"
+$ compact-ts generate --from "2025-06-30T22:42:05Z"
 25-181-956
 
 # ISO 8601 with offset, no seconds
-$ compact-ts --from "2025-06-28T20:28+02:00"
+$ compact-ts generate --from "2025-06-28T20:28+02:00"
 25-179-784
 
 # Date only (time defaults to 00:00)
-$ compact-ts --from 2025-01-01
+$ compact-ts generate --from 2025-01-01
 25-001-000
 
 # Compact date and time to minute precision
-$ compact-ts --from 20250630T2242
+$ compact-ts generate --from 20250630T2242
 25-181-956
 
 # Combining flags
-$ compact-ts --from "2025-06-30T22:42" --base b36
+$ compact-ts generate --from "2025-06-30T22:42" --base b36
 25-181-11U
+```
+
+### Expanding a compact timestamp
+
+Use the `expand` subcommand to convert a compact timestamp found within a string back to a standard format.
+
+```sh
+# Default expansion (assumes base-12)
+$ compact-ts expand "backup-log-25-181-956.zip"
+2025-06-30T22:42
+
+# Specify the base if it's not the default
+$ compact-ts expand "archive-25-181-11U.tar.gz" --base b36
+2025-06-30T22:42
+
+# Specify a custom output format
+$ compact-ts expand "25-001-000" --format "%Y-%m-%d"
+2025-01-01
+
+$ compact-ts expand "25-001-000" --format "%A, %B %d, %Y at %I:%M %p"
+Wednesday, January 01, 2025 at 12:00 AM
 ```
 
 ### Help
 
-For a full list of options, use the `--help` flag.
+For a full list of options, use the `--help` flag. You can also get help for a specific subcommand.
 ```sh
 $ compact-ts --help
-A utility to print a compact timestamp: YY-DOY-BASEMIN
+A utility for compact, sortable timestamps.
 
-Usage: compact-ts [OPTIONS]
+Usage: compact-ts <COMMAND>
+
+Commands:
+  generate  Generate a compact timestamp (default behavior)
+  expand    Expand a compact timestamp back to a standard format
+  help      Print this message or the help of the given subcommand(s)
 
 Options:
-  -b, --base <BASE>  The numerical base to use for encoding the minutes since midnight [default: b12] [possible values: b12, b36]
-      --from <FROM>  Convert a specific timestamp instead of using the current time.
-                     
-                     Tries to parse multiple formats in order of specificity.
-                     Timestamps with offsets are converted to local time.
-                     Naive timestamps are interpreted in the local timezone.
-                     Date-only inputs default to midnight.
-                     
-                     Examples:
-                     - 2025-06-30T22:42:05Z      (RFC 3339)
-                     - 2025-06-28T20:28+02:00    (ISO 8601 with offset, no seconds)
-                     - 20250628T20:28+02:00    (Compact date with offset)
-                     - 20250630T224205Z          (Compact ISO 8601)
-                     - 2025-06-30T22:42:05       (Naive full)
-                     - 2025-06-30T22:42          (Naive no seconds)
-                     - 20250630T2242             (Fully compact)
-                     - 2025-06-30                (Date only)
-                     - 20250630                  (Date only compact)
-  -h, --help         Print help
-  -V, --version      Print version
+  -h, --help     Print help
+  -V, --version  Print version
+
+$ compact-ts expand --help
+Expand a compact timestamp back to a standard format
+
+Usage: compact-ts expand [OPTIONS] <INPUT_STRING>
+
+Arguments:
+  <INPUT_STRING>
+          The string containing the compact timestamp to expand (e.g., "log-25-181-956.txt")
+
+Options:
+  -b, --base <BASE>
+          The numerical base to assume for the minutes component of the timestamp
+          [default: b12]
+          [possible values: b12, b36]
+  -f, --format <FORMAT>
+          The output format for the expanded timestamp, using chrono specifiers.
+          
+          The format cannot include seconds or sub-second precision (e.g., %S, %s, %f)
+          [default: %Y-%m-%dT%H:%M]
+  -h, --help
+          Print help
 ```
 
 ## Building from Source

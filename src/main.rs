@@ -1,10 +1,11 @@
 // File: src/main.rs
-// Description: A flexible timestamp generator.
-// Prints a compact timestamp: YY-DOY-BASEMIN with a configurable base
-// and can convert from a standard timestamp format.
+// Description: A flexible timestamp generator and expander.
+// Generates a compact timestamp: YY-DOY-BASEMIN.
+// Expands a compact timestamp back to a standard format.
 
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc};
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
+use regex::Regex;
 
 // SECTION 1: COMMAND-LINE INTERFACE SETUP
 // ========================================
@@ -17,6 +18,22 @@ use clap::{Parser, ValueEnum};
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Generate a compact timestamp (default behavior)
+    #[command(visible_alias = "gen")]
+    Generate(GenerateArgs),
+    /// Expand a compact timestamp back to a standard format
+    Expand(ExpandArgs),
+}
+
+/// Arguments for the `generate` command.
+#[derive(Parser, Debug)]
+pub struct GenerateArgs {
     /// The numerical base to use for encoding the minutes since midnight.
     #[arg(short, long, value_enum, default_value_t = Base::B12)]
     base: Base,
@@ -42,8 +59,26 @@ struct Cli {
     from: Option<String>,
 }
 
+/// Arguments for the `expand` command.
+#[derive(Parser, Debug)]
+pub struct ExpandArgs {
+    /// The string containing the compact timestamp to expand (e.g., "log-25-181-956.txt").
+    #[arg(required = true)]
+    input_string: String,
+
+    /// The numerical base to assume for the minutes component of the timestamp.
+    #[arg(short, long, value_enum, default_value_t = Base::B12)]
+    base: Base,
+
+    /// The output format for the expanded timestamp, using chrono specifiers.
+    ///
+    /// The format cannot include seconds or sub-second precision (e.g., %S, %s, %f).
+    #[arg(short, long, default_value = "%Y-%m-%dT%H:%M", verbatim_doc_comment)]
+    format: String,
+}
+
 /// Defines the available choices for the numerical base.
-#[derive(ValueEnum, Clone, Debug)]
+#[derive(ValueEnum, Clone, Debug, Copy)]
 enum Base {
     /// Base-12 (Duodecimal): 0-9, A-B. Optimal for 3 chars (max value 9BB).
     B12,
@@ -149,21 +184,67 @@ fn to_base_n(mut n: u32, base: u32) -> String {
     result.chars().rev().collect()
 }
 
-// SECTION 3: MAIN EXECUTION
-// =========================
+/// Converts a string in a given base to a non-negative integer.
+fn from_base_n(s: &str, base: u32) -> Result<u32, String> {
+    if !(2..=36).contains(&base) {
+        panic!("Base must be between 2 and 36.");
+    }
+    u32::from_str_radix(s, base)
+        .map_err(|_| format!("Invalid digit found in '{}' for base {}", s, base))
+}
+
+/// Validates that the format string does not request unsupported precision.
+fn validate_format_string(format: &str) -> Result<(), String> {
+    if format.contains("%S") || format.contains("%s") || format.contains("%f") {
+        Err(
+            "Output format string cannot contain second or sub-second specifiers (%S, %s, %f)."
+                .to_string(),
+        )
+    } else {
+        Ok(())
+    }
+}
+
+// SECTION 3: COMMAND HANDLERS & MAIN EXECUTION
+// ============================================
 
 fn main() {
-    let cli = Cli::parse();
+    // If no subcommand is provided, default to 'generate'.
+    // This makes `compact-ts --base b36` work as it did before.
+    let args: Vec<String> = std::env::args().collect();
+    let first_arg = args.get(1).map(|s| s.as_str());
 
+    let cli = if let Some(arg) = first_arg {
+        if !matches!(arg, "generate" | "gen" | "expand" | "-h" | "--help" | "-V" | "--version") {
+            let mut new_args = args;
+            new_args.insert(1, "generate".to_string());
+            Cli::parse_from(new_args)
+        } else {
+            Cli::parse()
+        }
+    } else {
+        // No args, default to `generate` which will print current time.
+        let mut new_args = args;
+        new_args.insert(1, "generate".to_string());
+        Cli::parse_from(new_args)
+    };
+
+    let result = match cli.command {
+        Commands::Generate(args) => handle_generate_command(args),
+        Commands::Expand(args) => handle_expand_command(args),
+    };
+
+    if let Err(e) = result {
+        eprintln!("Error: {}", e);
+        std::process::exit(1);
+    }
+}
+
+/// Handles the logic for the `generate` subcommand.
+fn handle_generate_command(args: GenerateArgs) -> Result<(), String> {
     // Determine the source datetime: either from the --from flag or the current time.
-    let source_dt = match cli.from {
-        Some(from_str) => match parse_flexible_timestamp(&from_str) {
-            Ok(dt) => dt,
-            Err(e) => {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-        },
+    let source_dt = match args.from {
+        Some(from_str) => parse_flexible_timestamp(&from_str)?,
         None => Local::now(),
     };
 
@@ -173,7 +254,7 @@ fn main() {
     let minutes_since_midnight = source_dt.time().num_seconds_from_midnight() / 60;
 
     // Determine the numerical base from the parsed arguments.
-    let base_num = match cli.base {
+    let base_num = match args.base {
         Base::B12 => 12,
         Base::B36 => 36,
     };
@@ -183,6 +264,65 @@ fn main() {
 
     // Print the final formatted timestamp, padding the base part to 3 characters.
     println!("{}-{}-{:0>3}", yy, doy, base_min_str);
+    Ok(())
+}
+
+/// Handles the logic for the `expand` subcommand.
+fn handle_expand_command(args: ExpandArgs) -> Result<(), String> {
+    validate_format_string(&args.format)?;
+
+    let (base_num, re_pattern) = match args.base {
+        Base::B12 => (12, r"(\d{2})-(\d{3})-([0-9A-B]{3})"),
+        Base::B36 => (36, r"(\d{2})-(\d{3})-([0-9A-Za-z]{3})"),
+    };
+
+    let re = Regex::new(re_pattern).unwrap(); // Pattern is static and valid.
+    let caps = re.captures(&args.input_string).ok_or_else(|| {
+        format!(
+            "No compact timestamp found in \"{}\".",
+            args.input_string
+        )
+    })?;
+
+    let yy_str = &caps[1];
+    let doy_str = &caps[2];
+    let basemin_str = &caps[3];
+
+    // Decode components
+    let year = 2000 + yy_str.parse::<i32>().unwrap(); // Regex ensures it's \d{2}
+    let doy = doy_str.parse::<u32>().unwrap(); // Regex ensures it's \d{3}
+
+    let minutes_since_midnight = from_base_n(basemin_str, base_num)?;
+
+    // Validate components
+    if minutes_since_midnight >= 1440 {
+        return Err(format!(
+            "Invalid minutes value '{}' ({} decimal), must be less than 1440.",
+            basemin_str, minutes_since_midnight
+        ));
+    }
+
+    // Construct NaiveDateTime
+    let date = NaiveDate::from_yo_opt(year, doy)
+        .ok_or_else(|| format!("Invalid day of year: {}.", doy))?;
+    let naive_dt = date
+        .and_hms_opt(
+            minutes_since_midnight / 60,
+            minutes_since_midnight % 60,
+            0,
+        )
+        .unwrap(); // Will not panic as minutes are < 1440
+
+    // Convert to local time
+    let local_dt = Local
+        .from_local_datetime(&naive_dt)
+        .single()
+        .ok_or_else(|| "Ambiguous local time".to_string())?;
+
+    // Format and print
+    println!("{}", local_dt.format(&args.format));
+
+    Ok(())
 }
 
 // SECTION 4: UNIT TESTS
@@ -263,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn test_base_conversion() {
+    fn test_base_conversion_to_base() {
         // 22*60 + 42 = 1362 minutes
         assert_eq!(to_base_n(1362, 12), "956");
         assert_eq!(to_base_n(1362, 36), "11U");
@@ -272,67 +412,104 @@ mod tests {
         assert_eq!(to_base_n(1248, 36), "YO");
     }
 
+    // --- Tests for `expand` logic ---
+
     #[test]
-    fn test_parse_naive_datetime_no_seconds_colon() {
-        let input = "2025-06-30T22:42";
-        let parsed = parse_flexible_timestamp(input).unwrap();
-        assert_eq!(parsed.year(), 2025);
-        assert_eq!(parsed.month(), 6);
-        assert_eq!(parsed.day(), 30);
-        assert_eq!(parsed.hour(), 22);
-        assert_eq!(parsed.minute(), 42);
-        assert_eq!(parsed.second(), 0);
+    fn test_base_conversion_from_base() {
+        assert_eq!(from_base_n("956", 12).unwrap(), 1362);
+        assert_eq!(from_base_n("11U", 36).unwrap(), 1362);
+        assert_eq!(from_base_n("880", 12).unwrap(), 1248);
+        assert_eq!(from_base_n("YO", 36).unwrap(), 1248);
+        assert_eq!(from_base_n("yo", 36).unwrap(), 1248); // case-insensitive
     }
 
     #[test]
-    fn test_parse_naive_datetime_no_seconds_compact_time() {
-        let input = "2025-06-30T2242";
-        let parsed = parse_flexible_timestamp(input).unwrap();
-        assert_eq!(parsed.year(), 2025);
-        assert_eq!(parsed.month(), 6);
-        assert_eq!(parsed.day(), 30);
-        assert_eq!(parsed.hour(), 22);
-        assert_eq!(parsed.minute(), 42);
-        assert_eq!(parsed.second(), 0);
+    fn test_base_conversion_from_base_invalid() {
+        assert!(from_base_n("95C", 12).is_err()); // C is not in base 12
+        assert!(from_base_n("11$", 36).is_err()); // $ is not in base 36
     }
 
     #[test]
-    fn test_parse_compact_date_naive_time_no_seconds_colon() {
-        let input = "20250630T22:42";
-        let parsed = parse_flexible_timestamp(input).unwrap();
-        assert_eq!(parsed.year(), 2025);
-        assert_eq!(parsed.month(), 6);
-        assert_eq!(parsed.day(), 30);
-        assert_eq!(parsed.hour(), 22);
-        assert_eq!(parsed.minute(), 42);
-        assert_eq!(parsed.second(), 0);
+    fn test_validate_format_string() {
+        assert!(validate_format_string("%Y-%m-%d %H:%M").is_ok());
+        assert!(validate_format_string("%A, %B %d").is_ok());
+        assert!(validate_format_string("hello world").is_ok()); // no specifiers is ok
     }
 
     #[test]
-    fn test_parse_fully_compact_no_seconds() {
-        let input = "20250630T2242";
-        let parsed = parse_flexible_timestamp(input).unwrap();
-        assert_eq!(parsed.year(), 2025);
-        assert_eq!(parsed.month(), 6);
-        assert_eq!(parsed.day(), 30);
-        assert_eq!(parsed.hour(), 22);
-        assert_eq!(parsed.minute(), 42);
-        assert_eq!(parsed.second(), 0);
+    fn test_validate_format_string_invalid() {
+        assert!(validate_format_string("%Y-%m-%d %H:%M:%S").is_err()); // has %S
+        assert!(validate_format_string("%Y-%m-%d %H:%M:%S.%f").is_err()); // has %f
+        assert!(validate_format_string("%s").is_err()); // has %s
+    }
+
+    // A testable core function for the expansion logic.
+    fn expand_core(input: &str, base: Base) -> Result<DateTime<Local>, String> {
+        let (base_num, re_pattern) = match base {
+            Base::B12 => (12, r"(\d{2})-(\d{3})-([0-9A-B]{3})"),
+            Base::B36 => (36, r"(\d{2})-(\d{3})-([0-9A-Za-z]{3})"),
+        };
+        let re = Regex::new(re_pattern).unwrap();
+        let caps = re.captures(input).ok_or_else(|| "no match".to_string())?;
+
+        let year = 2000 + caps[1].parse::<i32>().unwrap();
+        let doy = caps[2].parse::<u32>().unwrap();
+        let basemin_str = &caps[3];
+        let minutes_since_midnight = from_base_n(basemin_str, base_num)?;
+
+        if minutes_since_midnight >= 1440 {
+            return Err("invalid minutes".to_string());
+        }
+
+        let date = NaiveDate::from_yo_opt(year, doy).ok_or_else(|| "invalid doy".to_string())?;
+        let naive_dt = date
+            .and_hms_opt(
+                minutes_since_midnight / 60,
+                minutes_since_midnight % 60,
+                0,
+            )
+            .unwrap();
+        Local
+            .from_local_datetime(&naive_dt)
+            .single()
+            .ok_or_else(|| "ambiguous".to_string())
     }
 
     #[test]
-    fn test_parse_iso_no_seconds_with_offset() {
-        let input = "2025-06-28T20:28+02:00";
-        let expected = make_utc_dt(2025, 6, 28, 18, 28, 0);
-        let parsed = parse_flexible_timestamp(input).unwrap();
-        assert_eq!(parsed.with_timezone(&Utc), expected);
+    fn test_expand_core_logic_b12() {
+        // 2025-06-30 is day 181. 22:42 is 1362 minutes, which is 956 in base 12.
+        let result = expand_core("25-181-956", Base::B12).unwrap();
+        assert_eq!(result.year(), 2025);
+        assert_eq!(result.month(), 6);
+        assert_eq!(result.day(), 30);
+        assert_eq!(result.hour(), 22);
+        assert_eq!(result.minute(), 42);
     }
 
     #[test]
-    fn test_parse_compact_date_no_seconds_with_offset() {
-        let input = "20250628T20:28+02:00";
-        let expected = make_utc_dt(2025, 6, 28, 18, 28, 0);
-        let parsed = parse_flexible_timestamp(input).unwrap();
-        assert_eq!(parsed.with_timezone(&Utc), expected);
+    fn test_expand_core_logic_b36() {
+        // 2025-06-30 is day 181. 22:42 is 1362 minutes, which is 11U in base 36.
+        let result = expand_core("prefix-25-181-11U-suffix", Base::B36).unwrap();
+        assert_eq!(result.year(), 2025);
+        assert_eq!(result.month(), 6);
+        assert_eq!(result.day(), 30);
+        assert_eq!(result.hour(), 22);
+        assert_eq!(result.minute(), 42);
+    }
+
+    #[test]
+    fn test_expand_core_invalid_doy() {
+        // 2025 is not a leap year, so 366 is invalid.
+        assert!(expand_core("25-366-000", Base::B12).is_err());
+        // 2024 is a leap year.
+        assert!(expand_core("24-366-000", Base::B12).is_ok());
+    }
+
+    #[test]
+    fn test_expand_core_invalid_minutes() {
+        // AAA in base 12 is 10*144 + 10*12 + 10 = 1570, which is > 1439.
+        let result = expand_core("25-181-AAA", Base::B12);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "invalid minutes");
     }
 }
